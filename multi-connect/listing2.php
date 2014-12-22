@@ -33,7 +33,7 @@ for (;;) {
                 // One of the clients sent data, read it in a client specific buffer
                 $key = (int) $stream;
 
-                if (!isset($buffer[$key])) {
+                if (!isset($buffers[$key])) {
                     $buffers[$key] = '';
                 }
 
