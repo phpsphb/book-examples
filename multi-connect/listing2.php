@@ -29,11 +29,11 @@ for (;;) {
                     stream_set_blocking($client, 0);
                     $connections[$key] = $client;
                 }
-            // One of the clients sent data, read it in a client specific buffer
             } else {
+                // One of the clients sent data, read it in a client specific buffer
                 $key = (int) $stream;
 
-                if (!isset($buf[$key])) {
+                if (!isset($buffers[$key])) {
                     $buffers[$key] = '';
                 }
 
@@ -47,7 +47,7 @@ for (;;) {
 
             // Try to write 4096 bytes, look how many bytes were really written,
             // and subtract the written bytes from this client's buffer
-            if (isset($buffers[$key]) && strlen($buffers[$key] > 0)) {
+            if (isset($buffers[$key]) && strlen($buffers[$key]) > 0)) {
                 $bytesWritten = fwrite($stream, $buffers[$key], 4096);
                 $buffers[$key] = substr($buffers[$key], $bytesWritten);
             }
