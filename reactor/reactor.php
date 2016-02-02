@@ -1,17 +1,17 @@
 <?php
 
-class AdvancedReactor {
+final class Reactor {
     private $readStreams = [];
     private $readHandlers = [];
     private $writeStreams = [];
     private $writeHandlers = [];
 
-    function onRead($stream, callable $handler) {
+    function addReadStream($stream, callable $handler) {
         $this->readStreams[(int) $stream] = $stream;
         $this->readHandlers[(int) $stream] = $handler;
     }
 
-    function onWrite($stream, callable $handler) {
+    function addWriteStream($stream, callable $handler) {
         $this->writeStreams[(int) $stream] = $stream;
         $this->writeHandlers[(int) $stream] = $handler;
     }
@@ -29,7 +29,7 @@ class AdvancedReactor {
         $this->removeWriteStream($stream);
     }
 
-    function run() {
+    function loop() {
         for (;;) {
             $read = $this->readStreams;
             $write = $this->writeStreams;
@@ -52,47 +52,56 @@ class AdvancedReactor {
     }
 }
 
-$port = @$_SERVER['PORT'] ?: 1337;
-$server = @stream_socket_server("tcp://127.0.0.1:$port", $errno, $errstr);
+function echoServer(Reactor $reactor, $server) {
+    // This code runs when the socket has a connection ready for accepting
+    $reactor->addReadStream($server, function ($server) use ($reactor) {
+        $conn = stream_socket_accept($server);
+        $buf = '';
 
-if (false === $server) {
-    // Write error message to STDERR and exit, just like UNIX programs usually do
-    fprintf(STDERR, "Error connecting to socket: %d %s\n", $errno, $errstr);
-    exit(1);
+        // This runs when a read can be made without blocking:
+        $reactor->addReadStream($conn, function ($conn) use ($reactor, &$buf) {
+            $buf = fread($conn, 4096) ?: '';
+
+            if (@feof($conn)) {
+                $reactor->removeStream($conn);
+                fclose($conn);
+            }
+        });
+
+        // This runs when a write can be made without blocking:
+        $reactor->addWriteStream($conn, function ($conn) use ($reactor, &$buf) {
+            if (strlen($buf) > 0) {
+                // Remove the connection if writing failed (connection was closed by client)
+                fwrite($conn, $buf);
+                $buf = '';
+            }
+
+            if (@feof($conn)) {
+                $reactor->removeStream($conn);
+                fclose($conn);
+            }
+        });
+    });
 }
 
-printf("Listening on port %d\n", $port);
+$main = function () {
+    $port = @$_SERVER['PORT'] ?: 1337;
+    $server = @stream_socket_server("tcp://127.0.0.1:$port", $errno, $errstr);
+    stream_set_blocking($server, 0);
 
-$reactor = new AdvancedReactor();
+    if (false === $server) {
+        // Write error message to STDERR and exit, just like UNIX programs usually do
+        fprintf(STDERR, "Error connecting to socket: %d %s\n", $errno, $errstr);
+        exit(1);
+    }
 
-// This code runs when the socket has a connection ready for accepting
-$reactor->onRead($server, function ($server) use ($reactor) {
-    $conn = stream_socket_accept($server);
-    $buf = '';
+    printf("Listening on port %d\n", $port);
 
-    // This runs when a read can be made without blocking:
-    $reactor->onRead($conn, function ($conn) use ($reactor, &$buf) {
-        $buf = fread($conn, 4096) ?: '';
+    $reactor = new Reactor();
+    echoServer($reactor, $server);
+    $reactor->loop();
+};
 
-        if (@feof($conn)) {
-            $reactor->removeStream($conn);
-            fclose($conn);
-        }
-    });
-
-    // This runs when a write can be made without blocking:
-    $reactor->onWrite($conn, function ($conn) use ($reactor, &$buf) {
-        if (strlen($buf) > 0) {
-            // Remove the connection if writing failed (connection was closed by client)
-            fwrite($conn, $buf);
-            $buf = '';
-        }
-
-        if (@feof($conn)) {
-            $reactor->removeStream($conn);
-            fclose($conn);
-        }
-    });
-});
-
-$reactor->run();
+if (__FILE__ === realpath($argv[0])) {
+    $main();
+}
