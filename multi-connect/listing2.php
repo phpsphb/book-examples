@@ -1,6 +1,6 @@
 <?php
 
-$server = @stream_socket_server('tcp://0.0.0.0:1337', $errno, $errstr);
+$server = @stream_socket_server('tcp://0.0.0.0:9000', $errno, $errstr);
 stream_set_blocking($server, 0);
 
 if (false === $server) {
@@ -12,7 +12,8 @@ $connections = [];
 $buffers = [];
 
 for (;;) {
-    $readable = array_merge([$server], $connections);
+    $readable = $connections;
+    array_unshift($readable, $server);
     $writable = $connections;
     $except = null;
 
@@ -47,7 +48,7 @@ for (;;) {
 
             // Try to write 4096 bytes, look how many bytes were really written,
             // and subtract the written bytes from this client's buffer
-            if (isset($buffers[$key]) && strlen($buffers[$key]) > 0)) {
+            if (isset($buffers[$key]) && strlen($buffers[$key]) > 0) {
                 $bytesWritten = fwrite($stream, $buffers[$key], 4096);
                 $buffers[$key] = substr($buffers[$key], $bytesWritten);
             }

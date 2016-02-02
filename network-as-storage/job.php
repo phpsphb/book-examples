@@ -21,6 +21,7 @@ class HelloWorldJob extends Job
 {
     function run()
     {
+        sleep(2);
         printf("Hello World %s\n", $this->data);
     }
 }
