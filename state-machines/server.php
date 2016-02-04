@@ -2,145 +2,202 @@
 
 namespace SocketProgrammingHandbook;
 
-require __DIR__.'/option.php';
+class Event {
+    const READABLE = 'readable';
+    const WRITEABLE = 'writeable';
+    const TERMINATED = 'terminated';
 
-use function SocketProgrammingHandbook\Option\Some;
-use function SocketProgrammingHandbook\Option\None;
+    private $name;
+    private $reactor;
 
-class Connection
-{
-    const STATE_ACCEPTED = 1;
-    const STATE_READABLE = 2;
-    const STATE_WRITEABLE = 3;
-    const STATE_TERMINATED_BY_CLIENT = 4;
-
-    public $state;
-
-    private $stream;
-
-    function __construct($stream)
-    {
-        $this->stream = $stream;
+    function __construct($reactor, $name) {
+        $this->reactor = $reactor;
+        $this->name = $name;
     }
 
-    function stream()
-    {
-        return $this->stream;
+    function name() {
+        return $this->name;
     }
 
-    function id()
-    {
-        return (int) $this->stream;
-    }
-
-    function handleRead($data)
-    {
-        echo "Data\n";
-        return Some($this);
-    }
-
-    function handleWrite()
-    {
-        return Some($this);
+    function reactor() {
+        return $this->reactor;
     }
 }
 
-class Server
+abstract class Protocol {
+    const STATE_INITIAL = 1;
+    const STATE_READABLE = 2;
+    const STATE_WRITEABLE = 3;
+    const STATE_TERMINATED = 4;
+
+    private $state;
+    private $stream;
+    private $children = [];
+
+    function __construct($stream) {
+        $this->stream = $stream;
+    }
+
+    function state() {
+        return $this->state;
+    }
+
+    function addChild(Protocol $protocol) {
+        $this->children[$protocol->id()] = $protocol;
+    }
+
+    function id() {
+        return (int) $this->stream();
+    }
+
+    function stream() {
+        return $this->stream;
+    }
+
+    function handleEvent(Event $event) {
+        switch ($event->name()) {
+            case Event::READABLE:
+                $this->state = static::STATE_READABLE;
+                break;
+            case Event::WRITEABLE:
+                $this->state = static::STATE_WRITEABLE;
+                break;
+            case Event::TERMINATED:
+                $this->state = static::STATE_TERMINATED;
+                break;
+        }
+
+        switch ($this->state) {
+            case static::STATE_READABLE;
+                $this->handleData($event);
+                break;
+            case static::STATE_WRITEABLE;
+                $this->handleWrite($event);
+                break;
+            case static::STATE_TERMINATED;
+                $this->handleTerminate($event);
+                break;
+        }
+    }
+
+    function handleTerminate(Event $event) {
+        if (@feof($this->stream())) {
+            fclose($this->stream());
+
+            foreach ($this->children as $child) {
+                $child->handleTerminate($event);
+            }
+
+            $event->reactor()->removeProtocol($this);
+        }
+    }
+
+    function handleData(Event $event) {}
+    function handleWrite(Event $event) {}
+}
+
+class EchoServerConnection extends Protocol {
+    private $buf = '';
+
+    function handleData(Event $event) {
+        $this->buf = fread($this->stream(), 4096) ?: '';
+    }
+
+    function handleWrite(Event $event) {
+        if (strlen($this->buf) > 0) {
+            fwrite($this->stream(), $this->buf);
+            $this->buf = '';
+        }
+    }
+}
+
+class EchoServerProtocol extends Protocol {
+    function handleData(Event $event)
+    {
+        $conn = stream_socket_accept($this->stream());
+
+        if (!is_resource($conn)) {
+            return;
+        }
+
+        $conn = new EchoServerConnection($conn);
+        $this->addChild($conn);
+        $event->reactor()->addProtocol($conn);
+    }
+
+    function handleWrite(Event $event)
+    {}
+}
+
+class StateMachineReactor
 {
     const STATE_LISTENING = 1;
     const STATE_TERMINATED = 2;
 
-    public $state;
+    private $state;
+    private $streams = [];
 
-    private $connections = [];
-
-    function handleNewConnection($client)
-    {
-        $conn = new Connection($client);
-        $this->connections[$conn->id()] = $conn;
-
-        return Some($this);
+    function addProtocol(Protocol $stream) {
+        empty($this->streams[$stream->id()]) and $this->streams[$stream->id()] = $stream;
     }
 
-    function run()
+    function removeProtocol(Protocol $stream) {
+        unset($this->streams[$stream->id()]);
+    }
+
+    function terminate() {
+        $this->state = static::STATE_TERMINATED;
+    }
+
+    function loop()
     {
-        $server = @stream_socket_server('tcp://0.0.0.0:9000', $errno, $errstr);
-        stream_set_blocking($server, 0);
-
-        if (false === $server) {
-            fwrite(STDERR, "Error connecting to socket: $errno: $errstr\n");
-            exit(1);
-        }
-
         $this->state = self::STATE_LISTENING;
 
-        fwrite(STDERR, "Server listening on 0.0.0.0:9000\n");
-
         while ($this->state !== self::STATE_TERMINATED) {
-            $streams = array_map(function ($conn) {
-                return $conn->stream();
-            }, $this->connections);
+            $streams = array_map(function ($stream) {
+                return $stream->stream();
+            }, $this->streams);
 
-            $readable = $streams;
-            array_unshift($readable, $server);
-            $writable = $streams;
+            $read = $streams;
+            $write = $streams;
             $except = null;
 
-            if (stream_select($readable, $writable, $except, 0, 500) > 0) {
+            if ($read || $write) {
+                stream_select($read, $write, $except, 0, 500);
+
                 // Some streams have data to read
-                foreach ((array) $readable as $stream) {
-                    // When the server is readable this means that a client
-                    // connection is available. Let's accept the connection and store it
-                    if ($stream === $server) {
-                        $client = @stream_socket_accept($stream, 0, $clientAddress);
-
-                        if (is_resource($client)) {
-                            printf("Client %s connected\n", $clientAddress);
-                            stream_set_blocking($client, 0);
-                            $this->handleNewConnection($client);
-                        }
-                    } else {
-                        $id = (int) $stream;
-                        $conn = $this->connections[$id];
-                        $result = $conn->handleRead(fread($stream, 4096));
-
-                        if (!$result->isDefined()) {
-                            fclose($conn->stream());
-                            unset($this->connections[$conn->id()]);
-                        }
-                    }
+                foreach ((array) $read as $stream) {
+                    $id = (int) $stream;
+                    $sm = $this->streams[$id];
+                    $sm->handleEvent(new Event($this, Event::READABLE));
                 }
 
                 // Some streams are waiting for data
-                foreach ((array) $writable as $stream) {
+                foreach ((array) $write as $stream) {
                     $id = (int) $stream;
-                    if (isset($this->connections[$id])) {
-                        $conn = $this->connections[$id];
-                        $result = $conn->handleWrite();
+                    $sm = $this->streams[$id];
+                    $sm->handleEvent(new Event($this, Event::WRITEABLE));
+                }
 
-                        if (!$result->isDefined()) {
-                            fclose($conn->stream());
-                            unset($this->connections[$conn->id()]);
-                        }
+                foreach ($streams as $stream) {
+                    if (@feof($stream)) {
+                        $id = (int) $stream;
+                        $sm = $this->streams[$id];
+                        $sm->handleEvent(new Event($this, Event::TERMINATED));
                     }
                 }
-            }
-
-            // House keeping
-            // Purge connections which were closed by the peer
-            foreach ($this->connections as $id => $conn) {
-                if (feof($conn->stream())) {
-                    printf("Client %s closed the connection\n", stream_socket_get_name($conn->stream(), true));
-                    $conn->state = Connection::STATE_TERMINATED_BY_CLIENT;
-                    unset($this->connections[$id]);
-                    fclose($conn->stream());
-                }
+            } else {
+                usleep(500);
             }
         }
     }
 }
 
 if (realpath($_SERVER['argv'][0]) === __FILE__) {
-    $server = new Server;
-    $server->run();
+    $server = stream_socket_server('tcp://127.0.0.1:9000');
+    stream_set_blocking($server, 0);
+
+    $reactor = new StateMachineReactor();
+    $reactor->addProtocol(new EchoServerProtocol($server));
+    $reactor->loop();
 }
