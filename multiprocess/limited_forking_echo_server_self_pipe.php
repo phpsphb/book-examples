@@ -12,11 +12,10 @@ echo "Waiting…\n";
 $children = [];
 $pipe = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 
-pcntl_signal(SIGCHLD, function () use ($pipe) {
-    fwrite($pipe[1], "0\n");
-});
 
 for (;;) {
+    pcntl_signal_dispatch();
+
     $read = [$server, $pipe[0]];
     $write = null;
     $except = null;
@@ -74,8 +73,6 @@ for (;;) {
             }
         }
     }
-
-    pcntl_signal_dispatch();
 
     echo count($children)." connected\n";
 }

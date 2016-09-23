@@ -9,8 +9,8 @@ if (false === $server) {
 
 echo "Waiting…\n";
 
+const MAX_PROCS = 2;
 $children = [];
-$waiting = 0;
 
 for (;;) {
     $read = [$server];
@@ -20,7 +20,7 @@ for (;;) {
     stream_select($read, $write, $except, 0, 500);
 
     foreach ($read as $stream) {
-        if ($stream === $server && count($children) < 2) {
+        if ($stream === $server && count($children) < MAX_PROCS) {
             $conn = @stream_socket_accept($server, -1, $peer);
 
             if (!is_resource($conn)) {
